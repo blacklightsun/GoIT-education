@@ -1,0 +1,101 @@
+
+Вітаю 
+бачу не вірність розрахунків 
+починаючи з АРПУ та юзерів 
+до ревеню
+
+Додаю скрипт на саморозбір оскільки часу майже немає
+
+with monthly_revenue as (
+	select
+		date(date_trunc('month', payment_date)) as payment_month,
+		user_id,
+		game_name,
+		sum(revenue_amount_usd) as total_revenue
+	from project.games_payments gp 
+	group by 1,2,3
+),
+revenue_lag_lead_months as (
+	select
+		*,
+		date(payment_month - interval '1' month) as previous_claendar_month,
+		date(payment_month + interval '1' month) as next_calendar_month,
+		lag(total_revenue) over(partition by user_id order by payment_month) as previous_paid_month_revenue,
+		lag(payment_month) over(partition by user_id order by payment_month) as previous_paid_month,
+		lead(payment_month) over(partition by user_id order by payment_month) as next_paid_month
+	from monthly_revenue
+),
+revenue_metrics as (
+	select
+		payment_month,
+		user_id,
+		game_name,
+		total_revenue as revenue_amount,
+		'revenue' as revenue_type
+	from revenue_lag_lead_months
+	
+	union all
+	
+	select
+		payment_month,
+		user_id,
+		game_name,
+		total_revenue as revenue_amount,
+		'new_mrr' as revenue_type
+	from revenue_lag_lead_months
+	where previous_paid_month is null 
+	
+	union all
+	
+	select
+		next_calendar_month,
+		user_id,
+		game_name,
+		-total_revenue as revenue_amount,
+		'churn' as revenue_type
+	from revenue_lag_lead_months
+	where next_paid_month is null or next_paid_month != next_calendar_month
+	
+	union all
+	
+	select
+		payment_month,
+		user_id,
+		game_name,
+		total_revenue as revenue_amount,
+		'back_from_churn_revenue' as revenue_type
+	from revenue_lag_lead_months
+	where previous_paid_month != previous_claendar_month 
+				and previous_paid_month is not null
+	
+	union all
+	
+	select
+		payment_month,
+		user_id,
+		game_name,
+		-total_revenue as revenue_amount,
+		'contraction_revenue' as revenue_type
+	from revenue_lag_lead_months
+	where previous_paid_month = previous_claendar_month 
+		and total_revenue < previous_paid_month_revenue 
+
+		union all
+	
+	select
+		payment_month,
+		user_id,
+		game_name,
+		total_revenue as revenue_amount,
+		'expansion_revenue' as revenue_type
+	from revenue_lag_lead_months
+	where previous_paid_month = previous_claendar_month
+		and total_revenue > previous_paid_month_revenue 
+)
+select
+	rm.*,
+	gpu.language,
+	gpu.has_older_device_model,
+	gpu.age 
+from revenue_metrics rm
+left join project.games_paid_users gpu using(user_id)
